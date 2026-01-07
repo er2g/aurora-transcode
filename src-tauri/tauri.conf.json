@@ -55,7 +55,7 @@
       "active": true,
       "category": "Utility",
       "copyright": "",
-      "externalBin": [],
+      "externalBin": ["bin/ffmpeg"],
       "icon": [
         "icons/icon.ico",
         "icons/icon.icns",

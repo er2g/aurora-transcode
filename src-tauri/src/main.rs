@@ -6,7 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{Manager, State, Window};
+use tauri::api::process::{Command as SidecarCommand, CommandEvent};
+use tauri::{State, Window};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversionSettings {
@@ -56,9 +57,10 @@ async fn convert_media(
     window: Window,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let mut conversion_active = state.conversion_active.lock().unwrap();
-    *conversion_active = true;
-    drop(conversion_active);
+    {
+        let mut conversion_active = state.conversion_active.lock().unwrap();
+        *conversion_active = true;
+    }
 
     let mut args = vec![
         "-i".to_string(),
@@ -117,6 +119,63 @@ async fn convert_media(
     }
 
     args.push(settings.output_path.clone());
+
+    // Prefer the bundled sidecar (embedded ffmpeg) when available; fall back to system ffmpeg.
+    if let Ok(mut cmd) = SidecarCommand::new_sidecar("ffmpeg") {
+        cmd = cmd.args(&args);
+        let (mut rx, child) = cmd
+            .spawn()
+            .map_err(|e| format!("FFmpeg baslatilamadi: {}", e))?;
+
+        let mut stderr_buf = String::new();
+        let mut exit_code: Option<i32> = None;
+
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) => {
+                    for line in line.lines() {
+                        if let Some(time_str) = line.split("out_time_ms=").nth(1) {
+                            if let Ok(time_ms) = time_str.trim().parse::<f64>() {
+                                let time_sec = time_ms / 1_000_000.0;
+                                let progress = ConversionProgress {
+                                    percentage: 0.0,
+                                    time: format!("{:.1}s", time_sec),
+                                    speed: "1x".to_string(),
+                                    bitrate: "0kbits/s".to_string(),
+                                };
+                                let _ = window.emit("conversion-progress", &progress);
+                            }
+                        }
+                    }
+                }
+                CommandEvent::Stderr(line) => {
+                    if stderr_buf.len() < 32_768 {
+                        stderr_buf.push_str(&line);
+                        stderr_buf.push('\n');
+                    }
+                }
+                CommandEvent::Terminated(payload) => {
+                    exit_code = payload.code;
+                }
+                _ => {}
+            }
+
+            let conversion_active = state.conversion_active.lock().unwrap();
+            if !*conversion_active {
+                let _ = child.kill();
+                return Err("Dönüştürme iptal edildi".to_string());
+            }
+        }
+
+        if exit_code.unwrap_or(1) == 0 {
+            return Ok("Dönüştürme başarılı!".to_string());
+        }
+
+        if stderr_buf.trim().is_empty() {
+            return Err("FFmpeg hatası".to_string());
+        }
+        return Err(format!("FFmpeg hatası: {}", stderr_buf.trim()));
+    }
 
     let mut child = Command::new("ffmpeg")
         .args(&args)

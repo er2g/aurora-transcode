@@ -25,3 +25,9 @@ dist-ssr
 
 # Tauri
 src-tauri/target
+src-tauri/bin/ffmpeg-*
+src-tauri/bin/ffprobe-*
+src-tauri/bin/ffplay-*
+
+# Local build/download artifacts
+.tmp_ffmpeg*
